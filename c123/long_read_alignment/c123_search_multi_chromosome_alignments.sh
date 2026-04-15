@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Made with codex gpt-5.4, modified by Carlos
+
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -9,6 +11,8 @@ fi
 
 BAM="$1"
 OUTPUT="$2"
+
+echo "Finding multi chromosome alignments for $BAM and saving to $OUTPUT"
 
 samtools view "$BAM" | awk '
 BEGIN{OFS="\t"}
@@ -37,6 +41,7 @@ BEGIN{OFS="\t"}
 }
 END{
   if (NR > 0 && nchr > 1) print prev_read, chrs
-}' > "$OUTPUT"
+}' >"$OUTPUT"
 
 echo "Wrote $OUTPUT"
+echo ""
