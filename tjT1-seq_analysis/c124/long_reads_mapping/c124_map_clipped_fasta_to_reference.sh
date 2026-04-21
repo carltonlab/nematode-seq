@@ -57,6 +57,8 @@ FLAGSTAT_OUT="${OUTPUT_PREFIX}.flagstat.txt"
 CHROM_COUNTS_OUT="${OUTPUT_PREFIX}.chromosome_counts.tsv"
 PARTNER_HIGH_MAPQ_OUT="${OUTPUT_PREFIX}.${PARTNER_CHR}_high_mapq.tsv"
 PARTNER_POSITIONS_OUT="${OUTPUT_PREFIX}.${PARTNER_CHR}_positions.tsv"
+PARTNER_ALL_OUT="${OUTPUT_PREFIX}.${PARTNER_CHR}_all_hits.tsv"
+PARTNER_ALL_POSITIONS_OUT="${OUTPUT_PREFIX}.${PARTNER_CHR}_all_positions.tsv"
 
 minimap2 -a -x "$ALIGNER_PRESET" "$REFERENCE_FASTA" "$SOFTCLIP_FASTA" \
   | samtools sort -o "$SORTED_BAM" -
@@ -65,20 +67,20 @@ samtools index "$SORTED_BAM"
 samtools flagstat "$SORTED_BAM" >"$FLAGSTAT_OUT"
 samtools idxstats "$SORTED_BAM" >"$IDXSTATS_OUT"
 
-samtools view "$SORTED_BAM" | awk '
-BEGIN {
-  OFS = "\t"
-  print "chromosome", "mapped_segments"
-}
-$3 != "*" {
-  chr_count[$3]++
-}
-END {
-  for (chr in chr_count) {
-    print chr, chr_count[chr]
+{
+  printf "chromosome\tmapped_segments\n"
+  samtools view "$SORTED_BAM" | awk '
+  $3 != "*" {
+    chr_count[$3]++
   }
-}
-' | sort -k2,2nr -k1,1 >"$CHROM_COUNTS_OUT"
+  END {
+    OFS = "\t"
+    for (chr in chr_count) {
+      print chr, chr_count[chr]
+    }
+  }
+  ' | sort -k2,2nr -k1,1
+} >"$CHROM_COUNTS_OUT"
 
 samtools view "$SORTED_BAM" "$PARTNER_CHR" | awk -v min_mapq="$MIN_MAPQ" '
 BEGIN {
@@ -90,26 +92,61 @@ $5 >= min_mapq {
 }
 ' >"$PARTNER_HIGH_MAPQ_OUT"
 
-samtools view "$SORTED_BAM" "$PARTNER_CHR" | awk -v min_mapq="$MIN_MAPQ" -v partner_chr="$PARTNER_CHR" '
-$5 >= min_mapq {
-  pos_count[$4]++
-  read_seen[$4, $1] = 1
-}
-END {
+samtools view "$SORTED_BAM" "$PARTNER_CHR" | awk '
+BEGIN {
   OFS = "\t"
-  print "chr", "pos", "supporting_alignments", "supporting_unique_reads"
-  for (pos in pos_count) {
-    unique_reads = 0
-    for (k in read_seen) {
-      split(k, parts, SUBSEP)
-      if (parts[1] == pos) {
-        unique_reads++
-      }
-    }
-    print partner_chr, pos, pos_count[pos], unique_reads
-  }
+  print "read_name", "flag", "chr", "pos", "mapq", "cigar"
 }
-' | sort -k4,4nr -k3,3nr -k2,2n >"$PARTNER_POSITIONS_OUT"
+{
+  print $1, $2, $3, $4, $5, $6
+}
+' >"$PARTNER_ALL_OUT"
+
+{
+  printf "chr\tpos\tsupporting_alignments\tsupporting_unique_reads\n"
+  samtools view "$SORTED_BAM" "$PARTNER_CHR" | awk -v min_mapq="$MIN_MAPQ" -v partner_chr="$PARTNER_CHR" '
+  $5 >= min_mapq {
+    pos_count[$4]++
+    read_seen[$4, $1] = 1
+  }
+  END {
+    OFS = "\t"
+    for (pos in pos_count) {
+      unique_reads = 0
+      for (k in read_seen) {
+        split(k, parts, SUBSEP)
+        if (parts[1] == pos) {
+          unique_reads++
+        }
+      }
+      print partner_chr, pos, pos_count[pos], unique_reads
+    }
+  }
+  ' | sort -k4,4nr -k3,3nr -k2,2n
+} >"$PARTNER_POSITIONS_OUT"
+
+{
+  printf "chr\tpos\tsupporting_alignments\tsupporting_unique_reads\n"
+  samtools view "$SORTED_BAM" "$PARTNER_CHR" | awk -v partner_chr="$PARTNER_CHR" '
+  {
+    pos_count[$4]++
+    read_seen[$4, $1] = 1
+  }
+  END {
+    OFS = "\t"
+    for (pos in pos_count) {
+      unique_reads = 0
+      for (k in read_seen) {
+        split(k, parts, SUBSEP)
+        if (parts[1] == pos) {
+          unique_reads++
+        }
+      }
+      print partner_chr, pos, pos_count[pos], unique_reads
+    }
+  }
+  ' | sort -k4,4nr -k3,3nr -k2,2n
+} >"$PARTNER_ALL_POSITIONS_OUT"
 
 echo "Sorted BAM: $SORTED_BAM"
 echo "BAM index: ${SORTED_BAM}.bai"
@@ -118,3 +155,5 @@ echo "Idxstats: $IDXSTATS_OUT"
 echo "Chromosome counts: $CHROM_COUNTS_OUT"
 echo "Partner chromosome high-MAPQ hits: $PARTNER_HIGH_MAPQ_OUT"
 echo "Partner chromosome positions: $PARTNER_POSITIONS_OUT"
+echo "Partner chromosome all hits: $PARTNER_ALL_OUT"
+echo "Partner chromosome all positions: $PARTNER_ALL_POSITIONS_OUT"
