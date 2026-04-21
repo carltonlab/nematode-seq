@@ -1,0 +1,84 @@
+Summary of c124_map_clipped_fasta_to_reference.sh
+
+Purpose
+- This script remaps soft-clipped breakpoint-supporting sequences back to the reference genome.
+- It is intended for the follow-up step after exporting soft-clipped FASTA sequences from reads overlapping a known breakpoint.
+- The main goal is to determine which chromosome the clipped sequences align to and whether they cluster at plausible partner positions.
+
+Inputs
+- softclip_fasta: FASTA file of clipped sequences, usually from c124_collect_breakpoint_evidence.sh
+- reference_fasta: reference genome FASTA used for the original mapping
+- partner_chr: expected partner chromosome to inspect in detail, for example IV
+- output_prefix: base path for all output files
+- aligner_preset: optional minimap2 preset, default map-ont
+- min_mapq: optional minimum mapping quality for the partner-chromosome summaries, default 20
+
+Chunk summary
+
+1. Argument parsing and validation
+- Confirms that the required number of arguments was provided.
+- Checks that minimap2, samtools, awk, and sort are available.
+- Validates that the input FASTA and reference FASTA exist.
+- Validates that min_mapq is a non-negative integer.
+- Sets up output file names based on the output prefix.
+
+2. Remapping clipped sequences
+- Uses minimap2 to align the clipped FASTA sequences to the reference genome.
+- Pipes the alignments directly into samtools sort to produce a sorted BAM file.
+- Indexes the BAM file with samtools index.
+
+3. Basic QC outputs
+- Runs samtools flagstat to give a quick mapping summary.
+- Runs samtools idxstats to summarize how many mapped segments land on each chromosome.
+
+4. Chromosome-wide summary
+- Reads the BAM and counts mapped segments per chromosome.
+- Writes chromosome_counts.tsv, which is useful for identifying the main destination chromosomes of the clipped sequences.
+
+5. Partner chromosome high-confidence alignments
+- Filters alignments on the chosen partner chromosome using the minimum MAPQ threshold.
+- Writes a table of read name, flag, chromosome, position, MAPQ, and CIGAR.
+- This file is useful for directly inspecting the highest-confidence partner-side hits.
+
+6. Partner chromosome position summary
+- Counts how many high-MAPQ alignments support each position on the partner chromosome.
+- Also counts how many unique clipped sequences support each position.
+- Writes a summarized partner position table that can reveal clustering near the expected fusion site.
+
+Expected outputs
+- <output_prefix>.sorted.bam
+  Sorted BAM of clipped-sequence remappings.
+
+- <output_prefix>.sorted.bam.bai
+  Index for the BAM file.
+
+- <output_prefix>.flagstat.txt
+  General mapping statistics for the remapped clipped sequences.
+
+- <output_prefix>.idxstats.txt
+  Chromosome-level mapping summary from samtools idxstats.
+
+- <output_prefix>.chromosome_counts.tsv
+  Counts of mapped clipped segments per chromosome.
+
+- <output_prefix>.<partner_chr>_high_mapq.tsv
+  High-confidence alignments on the expected partner chromosome.
+
+- <output_prefix>.<partner_chr>_positions.tsv
+  Position-level summary on the expected partner chromosome, including alignment counts and unique-read counts.
+
+How to interpret the results
+- If many clipped sequences align to the expected partner chromosome, that supports the fusion model.
+- If high-MAPQ alignments on the partner chromosome cluster near an expected region, that is stronger evidence than scattered hits.
+- Unique-read counts are generally more informative than raw alignment counts, since one sequence can sometimes produce multiple noisy alignments.
+- If the clipped sequences mostly map to many different places or mostly have low MAPQ, the partner-side breakpoint remains unresolved.
+
+Practical interpretation
+- Strong support:
+  many clipped sequences align with good MAPQ to the expected partner chromosome and cluster near a plausible breakpoint region
+
+- Moderate support:
+  clipped sequences align to the expected partner chromosome, but positions are somewhat scattered
+
+- Weak support:
+  clipped sequences mostly map elsewhere, map ambiguously, or fail to cluster

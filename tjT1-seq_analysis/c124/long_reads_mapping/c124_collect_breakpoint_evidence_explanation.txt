@@ -1,0 +1,71 @@
+Summary of c124_collect_breakpoint_evidence.sh
+
+Purpose
+- This script collects long-read breakpoint evidence from a known reference interval.
+- It is designed for cases where the breakpoint is known on one chromosome and the partner chromosome is suspected but not all reads have clean supplementary alignments.
+
+Inputs
+- BAM file: sorted long-read BAM
+- Region: breakpoint-side interval in the reference genome, for example V:8644820-8644860
+- Partner chromosome: expected fusion partner, for example IV
+- Output prefix: base path for all output files
+- Minimum clip length: optional, default 100 bp
+
+Main idea
+- The script extracts all alignments overlapping the requested region.
+- For each alignment, it checks two kinds of evidence:
+  1. Supplementary alignment evidence through the SA tag
+  2. Soft-clipping evidence through the CIGAR string
+
+Evidence classes
+- SA_to_<partner_chr>
+  The read has at least one SA entry on the expected partner chromosome.
+- SA_to_other
+  The read has SA entries, but not to the expected partner chromosome.
+- softclipped_no_SA
+  The read has no SA tag, but has soft clipping in the alignment.
+- other
+  The read has neither SA evidence nor soft clipping.
+
+Why soft clipping is included
+- Some breakpoint-supporting reads do not receive a clean supplementary alignment from the aligner.
+- Those reads can still support the breakpoint if they align up to the breakpoint and then become soft-clipped.
+- The script exports sufficiently long clipped sequences so they can be aligned later to test where they belong.
+
+Output files
+- <output_prefix>.per_read.tsv
+  One row per alignment in the queried region.
+  Includes read name, primary position, CIGAR, clip lengths, SA presence, class, SA chromosomes, and SA positions.
+
+- <output_prefix>.summary.tsv
+  High-level counts for the queried region.
+  Includes total alignments, unique reads, and counts for each evidence class.
+
+- <output_prefix>.sa_partner_positions.tsv
+  Summary of all partner positions seen in SA tags.
+  Includes both raw SA-entry counts and unique-read support counts.
+
+- <output_prefix>.softclipped_segments.tsv
+  Metadata for exported soft-clipped segments.
+  Includes read name, side of clipping, clip length, and clipped sequence length.
+
+- <output_prefix>.softclipped_segments.fasta
+  FASTA file of soft-clipped sequences meeting the minimum clip-length threshold.
+  These sequences can be aligned later to test whether they support the expected fusion partner.
+
+How to interpret results
+- Strongest support for the suspected fusion:
+  Reads classified as SA_to_<partner_chr>
+
+- Additional unresolved breakpoint support:
+  Reads classified as softclipped_no_SA
+
+- Split-read evidence that may be noisy, repetitive, or off-target:
+  Reads classified as SA_to_other
+
+- Little or no breakpoint-style evidence:
+  Reads classified as other
+
+Important caution
+- Raw SA-entry counts can be inflated by repeated supplementary placements from a single noisy read.
+- Unique-read counts are usually more trustworthy than raw SA-entry totals when judging support.
