@@ -3,7 +3,7 @@ How to use
 Preferred workflow: use a config file
 
 1. Create a config template:
-python c124_clipping_extraction.py --make-config my_config.ini
+python c124_clipping_extraction.py --make-config my_prefix
 
 2. Edit the config file and fill in:
 - bam_file
@@ -17,7 +17,7 @@ python c124_clipping_extraction.py --make-config my_config.ini
 - min_clip_length
 
 3. Run from the config file:
-python c124_clipping_extraction.py --use-config my_config.ini
+python c124_clipping_extraction.py --use-config my_prefix_config.ini
 
 Direct command-line usage:
 python c124_clipping_extraction.py -f INPUT.bam -o OUTPUT_PARENT_DIR -p RUN_PREFIX -c CHROMOSOME -r START END
@@ -37,8 +37,12 @@ Optional whole-read FASTA output:
 --write-whole-fastas
 
 Notes on config usage:
+- `--make-config` takes only a prefix and writes `<prefix>_config.ini`.
+- `--make-config` rejects prefixes containing periods.
+- `--use-config` takes the actual config filename/path directly.
+- When a config file is used, it is copied into the run directory and its filename is preserved.
 - `--use-config` cannot be combined with other run-setting flags.
-- If `--use-config` is used, the config is copied into the run directory and the original is deleted only after a successful run.
+- The original config file is not renamed or deleted by the script.
 - If `--use-config` is not used, a config snapshot is generated automatically in the run directory.
 - Chromosome is required for both direct CLI runs and config-based runs.
 - `min_clip_length` controls which clipping events count as true clipping in clipping-based outputs and summaries.

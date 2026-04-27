@@ -106,6 +106,21 @@ min_clip_length = 100
     config_file.write_text(config_text)
 
 
+def validate_make_config_prefix(prefix_value):
+    if "." in prefix_value:
+        raise ValueError(
+            "--make-config expects only a prefix, without periods or a filename extension."
+        )
+    if not prefix_value.strip():
+        raise ValueError("--make-config prefix cannot be empty.")
+    return prefix_value
+
+
+def resolve_make_config_path(prefix_value):
+    prefix = validate_make_config_prefix(prefix_value)
+    return Path(f"{prefix}_config.ini").resolve()
+
+
 def parse_config(config_path):
     parser = configparser.ConfigParser()
     read_ok = parser.read(config_path)
@@ -183,7 +198,7 @@ def validate_args(args):
             raise ValueError(
                 "--make-config cannot be combined with any other run-setting flag."
             )
-        return {"make_config": args.make_config}
+        return {"make_config": str(resolve_make_config_path(args.make_config))}
 
     if args.use_config:
         other_args_used = any(
@@ -989,28 +1004,19 @@ min_clip_length = {min_clip_length}
 
 def write_run_config(settings, run_metadata):
     run_dir = run_metadata["run_dir"]
-    config_path = run_dir / f"{run_dir.name}_config.ini"
-
     if settings["config_source_path"] is not None:
         source_path = Path(settings["config_source_path"]).resolve()
+        config_path = run_dir / source_path.name
         shutil.copy2(source_path, config_path)
     else:
+        config_path = run_dir / f"{settings['prefix']}_config.ini"
         config_path.write_text(build_run_config_text(settings))
 
     return config_path
 
 
 def finalize_original_config_removal(settings, copied_config_path):
-    if settings["config_source_path"] is None:
-        return
-
-    source_path = Path(settings["config_source_path"]).resolve()
-    copied_config_path = copied_config_path.resolve()
-
-    if source_path == copied_config_path:
-        return
-
-    source_path.unlink()
+    return
 
 
 def main():
