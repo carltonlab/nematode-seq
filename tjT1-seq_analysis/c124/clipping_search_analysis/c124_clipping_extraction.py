@@ -4,6 +4,7 @@ import argparse
 import configparser
 import hashlib
 import secrets
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -138,6 +139,7 @@ def parse_config(config_path):
         "range": [int(range_start), int(range_end)],
         "clipping_side": clipping_side,
         "write_whole_fastas": write_whole_fastas,
+        "config_source_path": str(Path(config_path).resolve()),
     }
 
 
@@ -198,6 +200,7 @@ def validate_args(args):
         "range": args.range,
         "clipping_side": args.clipping_side,
         "write_whole_fastas": args.write_whole_fastas,
+        "config_source_path": None,
     }
 
 
@@ -265,6 +268,55 @@ def prepare_run_directory(settings, script_path):
     return run_metadata
 
 
+def build_run_config_text(settings):
+    start, end = settings["range"]
+    return """[clipping_extraction]
+bam_file = {bam_file}
+output_dir = {output_dir}
+prefix = {prefix}
+chromosome = {chromosome}
+range_start = {range_start}
+range_end = {range_end}
+clipping_side = {clipping_side}
+write_whole_fastas = {write_whole_fastas}
+""".format(
+        bam_file=Path(settings["bam_file"]).resolve(),
+        output_dir=Path(settings["output_dir"]).resolve(),
+        prefix=settings["prefix"],
+        chromosome=settings["chromosome"],
+        range_start=start,
+        range_end=end,
+        clipping_side=settings["clipping_side"],
+        write_whole_fastas=str(settings["write_whole_fastas"]).lower(),
+    )
+
+
+def write_run_config(settings, run_metadata):
+    run_dir = run_metadata["run_dir"]
+    config_path = run_dir / f"{run_dir.name}_config.ini"
+
+    if settings["config_source_path"] is not None:
+        source_path = Path(settings["config_source_path"]).resolve()
+        shutil.copy2(source_path, config_path)
+    else:
+        config_path.write_text(build_run_config_text(settings))
+
+    return config_path
+
+
+def finalize_original_config_removal(settings, copied_config_path):
+    if settings["config_source_path"] is None:
+        return
+
+    source_path = Path(settings["config_source_path"]).resolve()
+    copied_config_path = copied_config_path.resolve()
+
+    if source_path == copied_config_path:
+        return
+
+    source_path.unlink()
+
+
 def main():
     args = build_parser().parse_args()
 
@@ -284,6 +336,8 @@ def main():
 
         script_path = Path(__file__).resolve()
         run_metadata = prepare_run_directory(settings, script_path)
+        run_metadata["run_dir"].mkdir(parents=True, exist_ok=False)
+        run_config_path = write_run_config(settings, run_metadata)
 
         print("Argument validation complete.")
         print(f"BAM file: {bam_path}")
@@ -291,7 +345,8 @@ def main():
             f"Region: {settings['chromosome']}:{start}-{end} "
             f"(clipping side: {settings['clipping_side']})"
         )
-        print(f"Run directory to create: {run_metadata['run_dir']}")
+        print(f"Run directory created: {run_metadata['run_dir']}")
+        print(f"Run config saved: {run_config_path}")
         print(f"Run UID: {run_metadata['run_uid']}")
         print(f"Script version: {run_metadata['script_version']}")
         print(f"Script SHA256: {run_metadata['script_sha256']}")
@@ -299,6 +354,8 @@ def main():
             print(f"Git commit: {run_metadata['git_commit']}")
         else:
             print("Git commit: unavailable")
+
+        finalize_original_config_removal(settings, run_config_path)
 
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
