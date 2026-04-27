@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pysam
@@ -839,6 +840,53 @@ def write_summary_tsv(rows, run_metadata):
     }
 
 
+def get_log_timestamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def initialize_run_log(settings, run_metadata):
+    output_path = run_metadata["run_dir"] / f"{run_metadata['run_dir'].name}_run.log"
+    with open(output_path, "w") as handle:
+        handle.write(f"{get_log_timestamp()}\tSTART\trun_uid\t{run_metadata['run_uid']}\n")
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tscript_label\t{run_metadata['script_label']}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tscript_version\t{run_metadata['script_version']}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tscript_sha256\t{run_metadata['script_sha256']}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tgit_commit\t"
+            f"{run_metadata['git_commit'] if run_metadata['git_commit'] else 'unavailable'}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tbam_file\t{Path(settings['bam_file']).resolve()}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\toutput_dir\t{Path(settings['output_dir']).resolve()}\n"
+        )
+        handle.write(f"{get_log_timestamp()}\tINFO\trun_dir\t{run_metadata['run_dir']}\n")
+        handle.write(f"{get_log_timestamp()}\tINFO\tprefix\t{settings['prefix']}\n")
+        handle.write(f"{get_log_timestamp()}\tINFO\tchromosome\t{settings['chromosome']}\n")
+        handle.write(f"{get_log_timestamp()}\tINFO\trange_start\t{settings['range'][0]}\n")
+        handle.write(f"{get_log_timestamp()}\tINFO\trange_end\t{settings['range'][1]}\n")
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tclipping_side\t{settings['clipping_side']}\n"
+        )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\twrite_whole_fastas\t"
+            f"{str(settings['write_whole_fastas']).lower()}\n"
+        )
+    return output_path
+
+
+def append_run_log(log_path, status, key, value):
+    with open(log_path, "a") as handle:
+        handle.write(f"{get_log_timestamp()}\t{status}\t{key}\t{value}\n")
+
+
 def write_whole_read_fastas(rows, settings, run_metadata):
     if not settings["write_whole_fastas"]:
         return {
@@ -934,6 +982,7 @@ def finalize_original_config_removal(settings, copied_config_path):
 
 def main():
     args = build_parser().parse_args()
+    log_path = None
 
     try:
         settings = validate_args(args)
@@ -952,17 +1001,103 @@ def main():
         script_path = Path(__file__).resolve()
         run_metadata = prepare_run_directory(settings, script_path)
         run_metadata["run_dir"].mkdir(parents=True, exist_ok=False)
+        log_path = initialize_run_log(settings, run_metadata)
+        append_run_log(log_path, "DONE", "run_directory_created", run_metadata["run_dir"])
+
+        append_run_log(log_path, "START", "write_run_config", "begin")
         run_config_path = write_run_config(settings, run_metadata)
+        append_run_log(log_path, "DONE", "run_config_path", run_config_path)
+
+        append_run_log(log_path, "START", "collect_primary_region_rows", "begin")
         primary_rows = collect_primary_region_rows(settings)
+        append_run_log(log_path, "DONE", "primary_rows_found", len(primary_rows))
+
+        append_run_log(log_path, "START", "write_primary_region_tsv", "begin")
         primary_tsv_path = write_primary_region_tsv(primary_rows, run_metadata)
+        append_run_log(log_path, "DONE", "primary_region_tsv", primary_tsv_path)
+
+        append_run_log(log_path, "START", "write_clipped_fastas", "begin")
         clip_fasta_outputs = write_clipped_fastas(primary_rows, settings, run_metadata)
+        append_run_log(
+            log_path,
+            "DONE",
+            "left_clipping_fasta",
+            clip_fasta_outputs["left_output_path"]
+            if clip_fasta_outputs["left_output_path"] is not None
+            else "not_written",
+        )
+        append_run_log(
+            log_path,
+            "DONE",
+            "right_clipping_fasta",
+            clip_fasta_outputs["right_output_path"]
+            if clip_fasta_outputs["right_output_path"] is not None
+            else "not_written",
+        )
+
+        append_run_log(log_path, "START", "write_sa_tag_tsvs", "begin")
         sa_tsv_paths = write_sa_tag_tsvs(primary_rows, settings, run_metadata)
+        append_run_log(log_path, "DONE", "sa_tag_tsv_count", len(sa_tsv_paths))
+
+        append_run_log(log_path, "START", "write_unique_read_id_files", "begin")
         unique_read_id_outputs = write_unique_read_id_files(primary_rows, run_metadata)
+        append_run_log(
+            log_path,
+            "DONE",
+            "unique_reads_with_left_clipping",
+            unique_read_id_outputs["left"]["count"],
+        )
+        append_run_log(
+            log_path,
+            "DONE",
+            "unique_reads_with_right_clipping",
+            unique_read_id_outputs["right"]["count"],
+        )
+        append_run_log(
+            log_path,
+            "DONE",
+            "unique_reads_with_both_side_clipping",
+            unique_read_id_outputs["both"]["count"],
+        )
+        append_run_log(
+            log_path,
+            "DONE",
+            "unique_unclipped_reads",
+            unique_read_id_outputs["none"]["count"],
+        )
+
+        append_run_log(log_path, "START", "write_unclipped_summary", "begin")
         unclipped_summary_output = write_unclipped_summary(primary_rows, run_metadata)
+        append_run_log(
+            log_path,
+            "DONE",
+            "unclipped_summary_path",
+            unclipped_summary_output["output_path"],
+        )
+
+        append_run_log(log_path, "START", "write_summary_tsv", "begin")
         summary_output = write_summary_tsv(primary_rows, run_metadata)
+        append_run_log(log_path, "DONE", "run_summary_path", summary_output["output_path"])
+
+        append_run_log(log_path, "START", "write_whole_read_fastas", "begin")
         whole_read_fasta_output = write_whole_read_fastas(
             primary_rows, settings, run_metadata
         )
+        append_run_log(
+            log_path,
+            "DONE",
+            "whole_read_fasta",
+            whole_read_fasta_output["output_path"]
+            if whole_read_fasta_output["output_path"] is not None
+            else "not_written",
+        )
+        append_run_log(
+            log_path,
+            "DONE",
+            "whole_reads_written",
+            whole_read_fasta_output["written"],
+        )
+        append_run_log(log_path, "SUCCESS", "status", "completed")
 
         print("Argument validation complete.")
         print(f"BAM file: {bam_path}")
@@ -1011,6 +1146,7 @@ def main():
         if whole_read_fasta_output["output_path"] is not None:
             print(f"Whole-read FASTA saved: {whole_read_fasta_output['output_path']}")
             print(f"Whole reads written: {whole_read_fasta_output['written']}")
+        print(f"Run log saved: {log_path}")
         print(f"Run UID: {run_metadata['run_uid']}")
         print(f"Script version: {run_metadata['script_version']}")
         print(f"Script SHA256: {run_metadata['script_sha256']}")
@@ -1022,6 +1158,8 @@ def main():
         finalize_original_config_removal(settings, run_config_path)
 
     except ValueError as exc:
+        if log_path is not None:
+            append_run_log(log_path, "ERROR", "message", str(exc))
         sys.exit(f"ERROR: {exc}")
 
 
