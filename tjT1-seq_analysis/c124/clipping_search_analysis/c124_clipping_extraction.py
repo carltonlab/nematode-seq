@@ -62,6 +62,15 @@ def build_parser():
         help="Which clipping side(s) to extract. Default: both",
     )
     parser.add_argument(
+        "--alignment-scope",
+        choices=["primary", "primary_and_supplementary"],
+        default="primary_and_supplementary",
+        help=(
+            "Which alignments to consider in the region scan. "
+            "Default: primary_and_supplementary"
+        ),
+    )
+    parser.add_argument(
         "--min-clip-length",
         type=int,
         default=100,
@@ -99,6 +108,7 @@ chromosome = V
 range_start = 8644000
 range_end = 8644500
 clipping_side = both
+alignment_scope = primary_and_supplementary
 write_whole_fastas = false
 min_clip_length = 100
 """
@@ -139,6 +149,7 @@ def parse_config(config_path):
     range_start = section.get("range_start", "").strip()
     range_end = section.get("range_end", "").strip()
     clipping_side = section.get("clipping_side", "both").strip()
+    alignment_scope = section.get("alignment_scope", "primary_and_supplementary").strip()
     write_whole_fastas = section.getboolean("write_whole_fastas", fallback=False)
     min_clip_length = section.getint("min_clip_length", fallback=100)
 
@@ -158,6 +169,11 @@ def parse_config(config_path):
         raise ValueError(
             "Config value clipping_side must be one of: left, right, both"
         )
+    if alignment_scope not in {"primary", "primary_and_supplementary"}:
+        raise ValueError(
+            "Config value alignment_scope must be one of: "
+            "primary, primary_and_supplementary"
+        )
     if min_clip_length < 0:
         raise ValueError("Config value min_clip_length must be >= 0")
 
@@ -168,6 +184,7 @@ def parse_config(config_path):
         "chromosome": chromosome,
         "range": [int(range_start), int(range_end)],
         "clipping_side": clipping_side,
+        "alignment_scope": alignment_scope,
         "write_whole_fastas": write_whole_fastas,
         "min_clip_length": min_clip_length,
         "config_source_path": str(Path(config_path).resolve()),
@@ -192,6 +209,7 @@ def validate_args(args):
             )
         if (
             args.clipping_side != "both"
+            or args.alignment_scope != "primary_and_supplementary"
             or args.write_whole_fastas
             or args.min_clip_length != 100
         ):
@@ -217,6 +235,7 @@ def validate_args(args):
             )
         if (
             args.clipping_side != "both"
+            or args.alignment_scope != "primary_and_supplementary"
             or args.write_whole_fastas
             or args.min_clip_length != 100
         ):
@@ -244,6 +263,7 @@ def validate_args(args):
         "chromosome": args.chromosome,
         "range": args.range,
         "clipping_side": args.clipping_side,
+        "alignment_scope": args.alignment_scope,
         "write_whole_fastas": args.write_whole_fastas,
         "min_clip_length": args.min_clip_length,
         "config_source_path": None,
@@ -252,6 +272,18 @@ def validate_args(args):
 
 def clip_passes_threshold(clip_length, settings):
     return clip_length >= settings["min_clip_length"]
+
+
+def should_keep_alignment(read, settings):
+    if read.is_unmapped:
+        return False
+    if read.is_secondary:
+        return False
+    if settings["alignment_scope"] == "primary":
+        return not read.is_supplementary
+    if settings["alignment_scope"] == "primary_and_supplementary":
+        return True
+    raise ValueError(f"Unsupported alignment_scope: {settings['alignment_scope']}")
 
 
 def validate_range(start, end):
@@ -397,11 +429,7 @@ def collect_primary_region_rows(settings):
 
     with pysam.AlignmentFile(str(bam_path), "rb") as bam_file:
         for read in bam_file.fetch(chromosome, start0, end):
-            if read.is_unmapped:
-                continue
-            if read.is_secondary:
-                continue
-            if read.is_supplementary:
+            if not should_keep_alignment(read, settings):
                 continue
 
             left_clip, right_clip, left_soft, right_soft = get_clip_lengths(read)
@@ -419,6 +447,9 @@ def collect_primary_region_rows(settings):
                     "reference_end": read.reference_end,
                     "mapping_quality": read.mapping_quality,
                     "is_reverse": read.is_reverse,
+                    "alignment_type": (
+                        "supplementary" if read.is_supplementary else "primary"
+                    ),
                     "query_length": read.query_length or 0,
                     "query_sequence": read.query_sequence or "",
                     "left_clip_length": left_clip,
@@ -449,6 +480,7 @@ def write_primary_region_tsv(rows, run_metadata):
         "reference_end",
         "mapping_quality",
         "is_reverse",
+        "alignment_type",
         "query_length",
         "left_clip_length",
         "right_clip_length",
@@ -827,8 +859,16 @@ def count_unique_read_ids(rows):
 def build_summary_rows(rows):
     summary_rows = []
 
-    total_primary_rows = len(rows)
-    unique_primary_reads = count_unique_read_ids(rows)
+    total_overlapping_rows = len(rows)
+    primary_rows = [row for row in rows if row["alignment_type"] == "primary"]
+    supplementary_rows = [
+        row for row in rows if row["alignment_type"] == "supplementary"
+    ]
+    unique_overlapping_reads = count_unique_read_ids(rows)
+    unique_reads_with_primary_alignments = len({row["read_id"] for row in primary_rows})
+    unique_reads_with_supplementary_alignments = len(
+        {row["read_id"] for row in supplementary_rows}
+    )
     left_reads = unique_read_ids_for_clipped_side(rows, "left")
     right_reads = unique_read_ids_for_clipped_side(rows, "right")
     both_reads = unique_read_ids_for_clipped_side(rows, "both")
@@ -838,13 +878,26 @@ def build_summary_rows(rows):
 
     summary_rows.extend(
         [
-            {"metric": "total_primary_overlapping_rows", "value": total_primary_rows},
-            {"metric": "unique_primary_overlapping_reads", "value": unique_primary_reads},
+            {"metric": "total_overlapping_rows", "value": total_overlapping_rows},
+            {"metric": "primary_overlapping_rows", "value": len(primary_rows)},
+            {
+                "metric": "supplementary_overlapping_rows",
+                "value": len(supplementary_rows),
+            },
+            {"metric": "unique_overlapping_reads", "value": unique_overlapping_reads},
+            {
+                "metric": "unique_reads_with_primary_alignments",
+                "value": unique_reads_with_primary_alignments,
+            },
+            {
+                "metric": "unique_reads_with_supplementary_alignments",
+                "value": unique_reads_with_supplementary_alignments,
+            },
             {"metric": "unique_reads_with_left_clipping", "value": len(left_reads)},
             {"metric": "unique_reads_with_right_clipping", "value": len(right_reads)},
             {"metric": "unique_reads_with_both_side_clipping", "value": len(both_reads)},
             {"metric": "unique_unclipped_reads", "value": len(unclipped_reads)},
-            {"metric": "primary_rows_with_sa_tag", "value": len(reads_with_sa)},
+            {"metric": "overlapping_rows_with_sa_tag", "value": len(reads_with_sa)},
             {"metric": "unique_reads_with_sa_tag", "value": unique_reads_with_sa},
         ]
     )
@@ -890,6 +943,14 @@ def write_summary_tsv(rows, run_metadata):
         handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
         if run_metadata["git_commit"]:
             handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+        handle.write(
+            "# summary_scope=top-level counts reflect the collected alignment rows "
+            "(primary or primary_and_supplementary depending on alignment_scope)\n"
+        )
+        handle.write(
+            "# sa_counts_scope=per-chromosome SA metrics are counted from parsed SA entries "
+            "present on those collected rows\n"
+        )
 
         writer = csv.DictWriter(handle, fieldnames=["metric", "value"], delimiter="\t")
         writer.writeheader()
@@ -937,6 +998,9 @@ def initialize_run_log(settings, run_metadata):
             f"{get_log_timestamp()}\tINFO\tclipping_side\t{settings['clipping_side']}\n"
         )
         handle.write(
+            f"{get_log_timestamp()}\tINFO\talignment_scope\t{settings['alignment_scope']}\n"
+        )
+        handle.write(
             f"{get_log_timestamp()}\tINFO\twrite_whole_fastas\t"
             f"{str(settings['write_whole_fastas']).lower()}\n"
         )
@@ -968,11 +1032,16 @@ def write_whole_read_fastas(rows, settings, run_metadata):
         if run_metadata["git_commit"]:
             handle.write(f"# git_commit={run_metadata['git_commit']}\n")
 
+        seen_read_ids = set()
         for row in rows:
+            if row["read_id"] in seen_read_ids:
+                continue
+
             sequence = row["query_sequence"]
             if not sequence:
                 continue
 
+            seen_read_ids.add(row["read_id"])
             clipped_sides = get_clipped_sides_label(row)
             is_clipped = "true" if clipped_sides != "none" else "false"
 
@@ -1005,6 +1074,7 @@ chromosome = {chromosome}
 range_start = {range_start}
 range_end = {range_end}
 clipping_side = {clipping_side}
+alignment_scope = {alignment_scope}
 write_whole_fastas = {write_whole_fastas}
 min_clip_length = {min_clip_length}
 """.format(
@@ -1015,6 +1085,7 @@ min_clip_length = {min_clip_length}
         range_start=start,
         range_end=end,
         clipping_side=settings["clipping_side"],
+        alignment_scope=settings["alignment_scope"],
         write_whole_fastas=str(settings["write_whole_fastas"]).lower(),
         min_clip_length=settings["min_clip_length"],
     )
