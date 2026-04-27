@@ -648,6 +648,105 @@ def get_clipped_sides_label(row):
     return "none"
 
 
+def row_matches_read_id_group(row, clipped_side):
+    has_left = row["left_clip_length"] > 0
+    has_right = row["right_clip_length"] > 0
+
+    if clipped_side == "left":
+        return has_left
+    if clipped_side == "right":
+        return has_right
+    if clipped_side == "both":
+        return has_left and has_right
+    if clipped_side == "none":
+        return not has_left and not has_right
+
+    raise ValueError(f"Unsupported clipped-side group: {clipped_side}")
+
+
+def unique_read_ids_for_clipped_side(rows, clipped_side):
+    read_ids = set()
+    for row in rows:
+        if row_matches_read_id_group(row, clipped_side):
+            read_ids.add(row["read_id"])
+    return sorted(read_ids)
+
+
+def write_read_id_list(output_path, read_ids, run_metadata):
+    with open(output_path, "w") as handle:
+        handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+        handle.write(f"# script_version={run_metadata['script_version']}\n")
+        handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+        if run_metadata["git_commit"]:
+            handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+        for read_id in read_ids:
+            handle.write(f"{read_id}\n")
+
+
+def write_unique_read_id_files(rows, run_metadata):
+    run_dir = run_metadata["run_dir"]
+    output_paths = {}
+
+    for clipped_side in ["left", "right", "both", "none"]:
+        read_ids = unique_read_ids_for_clipped_side(rows, clipped_side)
+        side_label = "unclipped" if clipped_side == "none" else f"{clipped_side}_clipped"
+        output_path = run_dir / f"{run_dir.name}_{side_label}_read_ids.txt"
+        write_read_id_list(output_path, read_ids, run_metadata)
+        output_paths[clipped_side] = {
+            "output_path": output_path,
+            "count": len(read_ids),
+        }
+
+    return output_paths
+
+
+def write_unclipped_summary(rows, run_metadata):
+    unclipped_rows = []
+    for row in rows:
+        if get_clipped_sides_label(row) != "none":
+            continue
+        unclipped_rows.append(
+            {
+                "read_id": row["read_id"],
+                "chromosome": row["chromosome"],
+                "reference_start": row["reference_start"],
+                "reference_end": row["reference_end"],
+                "mapping_quality": row["mapping_quality"],
+                "is_reverse": row["is_reverse"],
+                "query_length": row["query_length"],
+                "has_sa_tag": row["has_sa_tag"],
+            }
+        )
+
+    output_path = run_metadata["run_dir"] / f"{run_metadata['run_dir'].name}_unclipped_summary.tsv"
+    fieldnames = [
+        "read_id",
+        "chromosome",
+        "reference_start",
+        "reference_end",
+        "mapping_quality",
+        "is_reverse",
+        "query_length",
+        "has_sa_tag",
+    ]
+
+    with open(output_path, "w", newline="") as handle:
+        handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+        handle.write(f"# script_version={run_metadata['script_version']}\n")
+        handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+        if run_metadata["git_commit"]:
+            handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(unclipped_rows)
+
+    return {
+        "output_path": output_path,
+        "count": len(unclipped_rows),
+    }
+
+
 def write_whole_read_fastas(rows, settings, run_metadata):
     if not settings["write_whole_fastas"]:
         return {
@@ -766,6 +865,8 @@ def main():
         primary_tsv_path = write_primary_region_tsv(primary_rows, run_metadata)
         clip_fasta_outputs = write_clipped_fastas(primary_rows, settings, run_metadata)
         sa_tsv_paths = write_sa_tag_tsvs(primary_rows, settings, run_metadata)
+        unique_read_id_outputs = write_unique_read_id_files(primary_rows, run_metadata)
+        unclipped_summary_output = write_unclipped_summary(primary_rows, run_metadata)
         whole_read_fasta_output = write_whole_read_fastas(
             primary_rows, settings, run_metadata
         )
@@ -790,6 +891,26 @@ def main():
             print(f"SA-tag chromosome TSVs written: {len(sa_tsv_paths)}")
             for sa_tsv_path in sa_tsv_paths:
                 print(f"SA-tag TSV saved: {sa_tsv_path}")
+        print(
+            f"Unique reads with left clipping: {unique_read_id_outputs['left']['count']} "
+            f"({unique_read_id_outputs['left']['output_path']})"
+        )
+        print(
+            f"Unique reads with right clipping: {unique_read_id_outputs['right']['count']} "
+            f"({unique_read_id_outputs['right']['output_path']})"
+        )
+        print(
+            f"Unique reads with both-side clipping: {unique_read_id_outputs['both']['count']} "
+            f"({unique_read_id_outputs['both']['output_path']})"
+        )
+        print(
+            f"Unique unclipped reads: {unique_read_id_outputs['none']['count']} "
+            f"({unique_read_id_outputs['none']['output_path']})"
+        )
+        print(
+            f"Unclipped summary saved: {unclipped_summary_output['output_path']} "
+            f"({unclipped_summary_output['count']} rows)"
+        )
         if whole_read_fasta_output["output_path"] is not None:
             print(f"Whole-read FASTA saved: {whole_read_fasta_output['output_path']}")
             print(f"Whole reads written: {whole_read_fasta_output['written']}")
