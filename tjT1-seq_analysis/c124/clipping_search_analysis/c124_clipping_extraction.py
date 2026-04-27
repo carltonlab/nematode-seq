@@ -286,6 +286,24 @@ def get_clip_lengths(read):
     return left_clip, right_clip, left_soft, right_soft
 
 
+def wrap_fasta_sequence(sequence, width=80):
+    return "\n".join(sequence[i:i + width] for i in range(0, len(sequence), width))
+
+
+def get_clipped_sequences(read):
+    sequence = read.query_sequence or ""
+    if not sequence or not read.cigartuples:
+        return "", ""
+
+    left_op, left_len = read.cigartuples[0]
+    right_op, right_len = read.cigartuples[-1]
+
+    left_sequence = sequence[:left_len] if left_op in {4, 5} and left_op == 4 else ""
+    right_sequence = sequence[-right_len:] if right_op in {4, 5} and right_op == 4 else ""
+
+    return left_sequence, right_sequence
+
+
 def collect_primary_region_rows(settings):
     bam_path = Path(settings["bam_file"]).resolve()
     chromosome = settings["chromosome"]
@@ -303,6 +321,7 @@ def collect_primary_region_rows(settings):
                 continue
 
             left_clip, right_clip, left_soft, right_soft = get_clip_lengths(read)
+            left_sequence, right_sequence = get_clipped_sequences(read)
             has_sa = read.has_tag("SA")
 
             rows.append(
@@ -320,6 +339,8 @@ def collect_primary_region_rows(settings):
                     "right_clip_length": right_clip,
                     "left_soft_clip": left_soft,
                     "right_soft_clip": right_soft,
+                    "left_clip_sequence": left_sequence,
+                    "right_clip_sequence": right_sequence,
                     "has_sa_tag": has_sa,
                 }
             )
@@ -359,6 +380,88 @@ def write_primary_region_tsv(rows, run_metadata):
         writer.writerows(rows)
 
     return output_path
+
+
+def should_write_left_clip(settings):
+    return settings["clipping_side"] in {"left", "both"}
+
+
+def should_write_right_clip(settings):
+    return settings["clipping_side"] in {"right", "both"}
+
+
+def build_clip_fasta_header(row, side):
+    if side == "left":
+        clip_length = row["left_clip_length"]
+        is_soft = row["left_soft_clip"]
+    else:
+        clip_length = row["right_clip_length"]
+        is_soft = row["right_soft_clip"]
+
+    soft_label = "soft" if is_soft else "hard_or_none"
+    return (
+        f">{row['read_id']} "
+        f"side={side} "
+        f"clip_length={clip_length} "
+        f"clip_type={soft_label} "
+        f"ref={row['chromosome']}:{row['reference_start']}-{row['reference_end']} "
+        f"mapq={row['mapping_quality']} "
+        f"sa_tag={str(row['has_sa_tag']).lower()}"
+    )
+
+
+def write_clipped_fastas(rows, settings, run_metadata):
+    run_dir = run_metadata["run_dir"]
+    left_path = run_dir / f"{run_dir.name}_left_clipping_sequences.fasta"
+    right_path = run_dir / f"{run_dir.name}_right_clipping_sequences.fasta"
+
+    left_written = 0
+    right_written = 0
+    left_output_path = None
+    right_output_path = None
+
+    if should_write_left_clip(settings):
+        with open(left_path, "w") as handle:
+            handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+            handle.write(f"# script_version={run_metadata['script_version']}\n")
+            handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+            if run_metadata["git_commit"]:
+                handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+            for row in rows:
+                sequence = row["left_clip_sequence"]
+                if not sequence:
+                    continue
+                handle.write(build_clip_fasta_header(row, "left") + "\n")
+                handle.write(wrap_fasta_sequence(sequence) + "\n")
+                left_written += 1
+
+        left_output_path = left_path
+
+    if should_write_right_clip(settings):
+        with open(right_path, "w") as handle:
+            handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+            handle.write(f"# script_version={run_metadata['script_version']}\n")
+            handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+            if run_metadata["git_commit"]:
+                handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+            for row in rows:
+                sequence = row["right_clip_sequence"]
+                if not sequence:
+                    continue
+                handle.write(build_clip_fasta_header(row, "right") + "\n")
+                handle.write(wrap_fasta_sequence(sequence) + "\n")
+                right_written += 1
+
+        right_output_path = right_path
+
+    return {
+        "left_output_path": left_output_path,
+        "right_output_path": right_output_path,
+        "left_written": left_written,
+        "right_written": right_written,
+    }
 
 
 def build_run_config_text(settings):
@@ -433,6 +536,7 @@ def main():
         run_config_path = write_run_config(settings, run_metadata)
         primary_rows = collect_primary_region_rows(settings)
         primary_tsv_path = write_primary_region_tsv(primary_rows, run_metadata)
+        clip_fasta_outputs = write_clipped_fastas(primary_rows, settings, run_metadata)
 
         print("Argument validation complete.")
         print(f"BAM file: {bam_path}")
@@ -444,6 +548,12 @@ def main():
         print(f"Run config saved: {run_config_path}")
         print(f"Primary-read TSV saved: {primary_tsv_path}")
         print(f"Primary reads found: {len(primary_rows)}")
+        if clip_fasta_outputs["left_output_path"] is not None:
+            print(f"Left-clipping FASTA saved: {clip_fasta_outputs['left_output_path']}")
+            print(f"Left clipped sequences written: {clip_fasta_outputs['left_written']}")
+        if clip_fasta_outputs["right_output_path"] is not None:
+            print(f"Right-clipping FASTA saved: {clip_fasta_outputs['right_output_path']}")
+            print(f"Right clipped sequences written: {clip_fasta_outputs['right_written']}")
         print(f"Run UID: {run_metadata['run_uid']}")
         print(f"Script version: {run_metadata['script_version']}")
         print(f"Script SHA256: {run_metadata['script_sha256']}")
