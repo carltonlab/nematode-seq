@@ -361,6 +361,15 @@ def parse_cigar_end_clipping(cigar_string):
     }
 
 
+def get_reference_consumed_bases(cigar_string):
+    cigar_ops = re.findall(r"(\d+)([MIDNSHP=X])", cigar_string)
+    reference_bases = 0
+    for length_str, op in cigar_ops:
+        if op in {"M", "D", "N", "=", "X"}:
+            reference_bases += int(length_str)
+    return reference_bases
+
+
 def wrap_fasta_sequence(sequence, width=80):
     return "\n".join(sequence[i:i + width] for i in range(0, len(sequence), width))
 
@@ -514,10 +523,16 @@ def parse_sa_tag(sa_tag_value):
         except ValueError:
             continue
 
+        reference_span = get_reference_consumed_bases(cigar)
+        reference_end = pos + reference_span - 1 if reference_span > 0 else pos
+
         entries.append(
             {
                 "sa_chromosome": chrom,
                 "sa_position": pos,
+                "sa_reference_start": pos,
+                "sa_reference_end": reference_end,
+                "sa_reference_span": reference_span,
                 "sa_strand": strand,
                 "sa_cigar": cigar,
                 "sa_mapq": mapq,
@@ -597,6 +612,9 @@ def write_sa_tag_tsvs(rows, settings, run_metadata):
         "read_reference_end",
         "sa_chromosome",
         "sa_position",
+        "sa_reference_start",
+        "sa_reference_end",
+        "sa_reference_span",
         "sa_strand",
         "sa_cigar",
         "sa_left_clip_length",
