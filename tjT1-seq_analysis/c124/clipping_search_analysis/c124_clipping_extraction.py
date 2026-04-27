@@ -747,6 +747,87 @@ def write_unclipped_summary(rows, run_metadata):
     }
 
 
+def count_unique_read_ids(rows):
+    return len({row["read_id"] for row in rows})
+
+
+def build_summary_rows(rows):
+    summary_rows = []
+
+    total_primary_rows = len(rows)
+    unique_primary_reads = count_unique_read_ids(rows)
+    left_reads = unique_read_ids_for_clipped_side(rows, "left")
+    right_reads = unique_read_ids_for_clipped_side(rows, "right")
+    both_reads = unique_read_ids_for_clipped_side(rows, "both")
+    unclipped_reads = unique_read_ids_for_clipped_side(rows, "none")
+    reads_with_sa = [row for row in rows if row["has_sa_tag"]]
+    unique_reads_with_sa = len({row["read_id"] for row in reads_with_sa})
+
+    summary_rows.extend(
+        [
+            {"metric": "total_primary_overlapping_rows", "value": total_primary_rows},
+            {"metric": "unique_primary_overlapping_reads", "value": unique_primary_reads},
+            {"metric": "unique_reads_with_left_clipping", "value": len(left_reads)},
+            {"metric": "unique_reads_with_right_clipping", "value": len(right_reads)},
+            {"metric": "unique_reads_with_both_side_clipping", "value": len(both_reads)},
+            {"metric": "unique_unclipped_reads", "value": len(unclipped_reads)},
+            {"metric": "primary_rows_with_sa_tag", "value": len(reads_with_sa)},
+            {"metric": "unique_reads_with_sa_tag", "value": unique_reads_with_sa},
+        ]
+    )
+
+    sa_entry_counts_by_chromosome = {}
+    unique_sa_reads_by_chromosome = {}
+
+    for row in rows:
+        if not row["has_sa_tag"]:
+            continue
+        for sa_entry in row["sa_entries"]:
+            chromosome = sa_entry["sa_chromosome"]
+            sa_entry_counts_by_chromosome[chromosome] = (
+                sa_entry_counts_by_chromosome.get(chromosome, 0) + 1
+            )
+            unique_sa_reads_by_chromosome.setdefault(chromosome, set()).add(row["read_id"])
+
+    for chromosome in sorted(sa_entry_counts_by_chromosome):
+        safe_chromosome = sanitize_filename(chromosome)
+        summary_rows.append(
+            {
+                "metric": f"sa_entries_to_{safe_chromosome}",
+                "value": sa_entry_counts_by_chromosome[chromosome],
+            }
+        )
+        summary_rows.append(
+            {
+                "metric": f"unique_reads_with_sa_to_{safe_chromosome}",
+                "value": len(unique_sa_reads_by_chromosome[chromosome]),
+            }
+        )
+
+    return summary_rows
+
+
+def write_summary_tsv(rows, run_metadata):
+    output_path = run_metadata["run_dir"] / f"{run_metadata['run_dir'].name}_summary.tsv"
+    summary_rows = build_summary_rows(rows)
+
+    with open(output_path, "w", newline="") as handle:
+        handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+        handle.write(f"# script_version={run_metadata['script_version']}\n")
+        handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+        if run_metadata["git_commit"]:
+            handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+        writer = csv.DictWriter(handle, fieldnames=["metric", "value"], delimiter="\t")
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    return {
+        "output_path": output_path,
+        "row_count": len(summary_rows),
+    }
+
+
 def write_whole_read_fastas(rows, settings, run_metadata):
     if not settings["write_whole_fastas"]:
         return {
@@ -867,6 +948,7 @@ def main():
         sa_tsv_paths = write_sa_tag_tsvs(primary_rows, settings, run_metadata)
         unique_read_id_outputs = write_unique_read_id_files(primary_rows, run_metadata)
         unclipped_summary_output = write_unclipped_summary(primary_rows, run_metadata)
+        summary_output = write_summary_tsv(primary_rows, run_metadata)
         whole_read_fasta_output = write_whole_read_fastas(
             primary_rows, settings, run_metadata
         )
@@ -910,6 +992,10 @@ def main():
         print(
             f"Unclipped summary saved: {unclipped_summary_output['output_path']} "
             f"({unclipped_summary_output['count']} rows)"
+        )
+        print(
+            f"Run summary saved: {summary_output['output_path']} "
+            f"({summary_output['row_count']} metrics)"
         )
         if whole_read_fasta_output["output_path"] is not None:
             print(f"Whole-read FASTA saved: {whole_read_fasta_output['output_path']}")
