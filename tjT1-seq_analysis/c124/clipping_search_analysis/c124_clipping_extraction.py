@@ -4,6 +4,7 @@ import argparse
 import configparser
 import csv
 import hashlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -216,6 +217,10 @@ def build_run_directory_name(prefix, chromosome, start, end):
     return f"{prefix}_{SCRIPT_LABEL}_{chromosome.lower()}{start}-{end}"
 
 
+def sanitize_filename(name):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
 def generate_run_uid():
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
     return "".join(secrets.choice(alphabet) for _ in range(RUN_ID_LENGTH))
@@ -323,6 +328,7 @@ def collect_primary_region_rows(settings):
             left_clip, right_clip, left_soft, right_soft = get_clip_lengths(read)
             left_sequence, right_sequence = get_clipped_sequences(read)
             has_sa = read.has_tag("SA")
+            sa_entries = parse_sa_tag(read.get_tag("SA")) if has_sa else []
 
             rows.append(
                 {
@@ -342,6 +348,7 @@ def collect_primary_region_rows(settings):
                     "left_clip_sequence": left_sequence,
                     "right_clip_sequence": right_sequence,
                     "has_sa_tag": has_sa,
+                    "sa_entries": sa_entries,
                 }
             )
 
@@ -408,6 +415,128 @@ def build_clip_fasta_header(row, side):
         f"mapq={row['mapping_quality']} "
         f"sa_tag={str(row['has_sa_tag']).lower()}"
     )
+
+
+def parse_sa_tag(sa_tag_value):
+    entries = []
+    for raw_entry in sa_tag_value.split(";"):
+        raw_entry = raw_entry.strip()
+        if not raw_entry:
+            continue
+
+        fields = raw_entry.split(",")
+        if len(fields) < 6:
+            continue
+
+        chrom, pos, strand, cigar, mapq, nm = fields[:6]
+        try:
+            pos = int(pos)
+        except ValueError:
+            continue
+
+        entries.append(
+            {
+                "sa_chromosome": chrom,
+                "sa_position": pos,
+                "sa_strand": strand,
+                "sa_cigar": cigar,
+                "sa_mapq": mapq,
+                "sa_nm": nm,
+                "sa_raw_entry": raw_entry,
+            }
+        )
+
+    return entries
+
+
+def collect_sa_side_rows(rows, settings):
+    sa_rows = []
+
+    for row in rows:
+        if not row["has_sa_tag"]:
+            continue
+
+        if should_write_left_clip(settings) and row["left_clip_length"] > 0:
+            for sa_entry in row["sa_entries"]:
+                sa_rows.append(
+                    {
+                        "read_id": row["read_id"],
+                        "clip_side": "left",
+                        "clip_length": row["left_clip_length"],
+                        "clip_is_soft": row["left_soft_clip"],
+                        "read_chromosome": row["chromosome"],
+                        "read_reference_start": row["reference_start"],
+                        "read_reference_end": row["reference_end"],
+                        **sa_entry,
+                    }
+                )
+
+        if should_write_right_clip(settings) and row["right_clip_length"] > 0:
+            for sa_entry in row["sa_entries"]:
+                sa_rows.append(
+                    {
+                        "read_id": row["read_id"],
+                        "clip_side": "right",
+                        "clip_length": row["right_clip_length"],
+                        "clip_is_soft": row["right_soft_clip"],
+                        "read_chromosome": row["chromosome"],
+                        "read_reference_start": row["reference_start"],
+                        "read_reference_end": row["reference_end"],
+                        **sa_entry,
+                    }
+                )
+
+    return sa_rows
+
+
+def write_sa_tag_tsvs(rows, settings, run_metadata):
+    sa_rows = collect_sa_side_rows(rows, settings)
+    if not sa_rows:
+        return []
+
+    fieldnames = [
+        "read_id",
+        "clip_side",
+        "clip_length",
+        "clip_is_soft",
+        "read_chromosome",
+        "read_reference_start",
+        "read_reference_end",
+        "sa_chromosome",
+        "sa_position",
+        "sa_strand",
+        "sa_cigar",
+        "sa_mapq",
+        "sa_nm",
+        "sa_raw_entry",
+    ]
+
+    output_paths = []
+    sa_rows_by_chromosome = {}
+    for row in sa_rows:
+        sa_rows_by_chromosome.setdefault(row["sa_chromosome"], []).append(row)
+
+    for sa_chromosome, chromosome_rows in sorted(sa_rows_by_chromosome.items()):
+        safe_chromosome = sanitize_filename(sa_chromosome)
+        output_path = (
+            run_metadata["run_dir"]
+            / f"{run_metadata['run_dir'].name}_sa_tags_{safe_chromosome}.tsv"
+        )
+
+        with open(output_path, "w", newline="") as handle:
+            handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+            handle.write(f"# script_version={run_metadata['script_version']}\n")
+            handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+            if run_metadata["git_commit"]:
+                handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(chromosome_rows)
+
+        output_paths.append(output_path)
+
+    return output_paths
 
 
 def write_clipped_fastas(rows, settings, run_metadata):
@@ -537,6 +666,7 @@ def main():
         primary_rows = collect_primary_region_rows(settings)
         primary_tsv_path = write_primary_region_tsv(primary_rows, run_metadata)
         clip_fasta_outputs = write_clipped_fastas(primary_rows, settings, run_metadata)
+        sa_tsv_paths = write_sa_tag_tsvs(primary_rows, settings, run_metadata)
 
         print("Argument validation complete.")
         print(f"BAM file: {bam_path}")
@@ -554,6 +684,10 @@ def main():
         if clip_fasta_outputs["right_output_path"] is not None:
             print(f"Right-clipping FASTA saved: {clip_fasta_outputs['right_output_path']}")
             print(f"Right clipped sequences written: {clip_fasta_outputs['right_written']}")
+        if sa_tsv_paths:
+            print(f"SA-tag chromosome TSVs written: {len(sa_tsv_paths)}")
+            for sa_tsv_path in sa_tsv_paths:
+                print(f"SA-tag TSV saved: {sa_tsv_path}")
         print(f"Run UID: {run_metadata['run_uid']}")
         print(f"Script version: {run_metadata['script_version']}")
         print(f"Script SHA256: {run_metadata['script_sha256']}")
