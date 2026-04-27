@@ -2,12 +2,15 @@
 
 import argparse
 import configparser
+import csv
 import hashlib
 import secrets
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pysam
 
 
 SCRIPT_LABEL = "clipping_extraction"
@@ -268,6 +271,96 @@ def prepare_run_directory(settings, script_path):
     return run_metadata
 
 
+def get_clip_lengths(read):
+    if not read.cigartuples:
+        return 0, 0, False, False
+
+    left_op, left_len = read.cigartuples[0]
+    right_op, right_len = read.cigartuples[-1]
+
+    left_clip = left_len if left_op in {4, 5} else 0
+    right_clip = right_len if right_op in {4, 5} else 0
+    left_soft = left_op == 4
+    right_soft = right_op == 4
+
+    return left_clip, right_clip, left_soft, right_soft
+
+
+def collect_primary_region_rows(settings):
+    bam_path = Path(settings["bam_file"]).resolve()
+    chromosome = settings["chromosome"]
+    start, end = settings["range"]
+    start0 = start - 1
+    rows = []
+
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam_file:
+        for read in bam_file.fetch(chromosome, start0, end):
+            if read.is_unmapped:
+                continue
+            if read.is_secondary:
+                continue
+            if read.is_supplementary:
+                continue
+
+            left_clip, right_clip, left_soft, right_soft = get_clip_lengths(read)
+            has_sa = read.has_tag("SA")
+
+            rows.append(
+                {
+                    "read_id": read.query_name,
+                    "chromosome": chromosome,
+                    "region_start": start,
+                    "region_end": end,
+                    "reference_start": read.reference_start + 1,
+                    "reference_end": read.reference_end,
+                    "mapping_quality": read.mapping_quality,
+                    "is_reverse": read.is_reverse,
+                    "query_length": read.query_length or 0,
+                    "left_clip_length": left_clip,
+                    "right_clip_length": right_clip,
+                    "left_soft_clip": left_soft,
+                    "right_soft_clip": right_soft,
+                    "has_sa_tag": has_sa,
+                }
+            )
+
+    return rows
+
+
+def write_primary_region_tsv(rows, run_metadata):
+    run_dir = run_metadata["run_dir"]
+    output_path = run_dir / f"{run_dir.name}_primary_region_reads.tsv"
+    fieldnames = [
+        "read_id",
+        "chromosome",
+        "region_start",
+        "region_end",
+        "reference_start",
+        "reference_end",
+        "mapping_quality",
+        "is_reverse",
+        "query_length",
+        "left_clip_length",
+        "right_clip_length",
+        "left_soft_clip",
+        "right_soft_clip",
+        "has_sa_tag",
+    ]
+
+    with open(output_path, "w", newline="") as handle:
+        handle.write(f"# run_uid={run_metadata['run_uid']}\n")
+        handle.write(f"# script_version={run_metadata['script_version']}\n")
+        handle.write(f"# script_sha256={run_metadata['script_sha256']}\n")
+        if run_metadata["git_commit"]:
+            handle.write(f"# git_commit={run_metadata['git_commit']}\n")
+
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return output_path
+
+
 def build_run_config_text(settings):
     start, end = settings["range"]
     return """[clipping_extraction]
@@ -338,6 +431,8 @@ def main():
         run_metadata = prepare_run_directory(settings, script_path)
         run_metadata["run_dir"].mkdir(parents=True, exist_ok=False)
         run_config_path = write_run_config(settings, run_metadata)
+        primary_rows = collect_primary_region_rows(settings)
+        primary_tsv_path = write_primary_region_tsv(primary_rows, run_metadata)
 
         print("Argument validation complete.")
         print(f"BAM file: {bam_path}")
@@ -347,6 +442,8 @@ def main():
         )
         print(f"Run directory created: {run_metadata['run_dir']}")
         print(f"Run config saved: {run_config_path}")
+        print(f"Primary-read TSV saved: {primary_tsv_path}")
+        print(f"Primary reads found: {len(primary_rows)}")
         print(f"Run UID: {run_metadata['run_uid']}")
         print(f"Script version: {run_metadata['script_version']}")
         print(f"Script SHA256: {run_metadata['script_sha256']}")
