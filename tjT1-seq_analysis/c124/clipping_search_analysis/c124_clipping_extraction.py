@@ -413,7 +413,12 @@ def write_primary_region_tsv(rows, run_metadata):
         if run_metadata["git_commit"]:
             handle.write(f"# git_commit={run_metadata['git_commit']}\n")
 
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            delimiter="\t",
+            extrasaction="ignore",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
