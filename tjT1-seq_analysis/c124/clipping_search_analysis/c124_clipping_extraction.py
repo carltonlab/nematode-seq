@@ -16,7 +16,6 @@ import pysam
 
 SCRIPT_LABEL = "clipping_extraction"
 SCRIPT_VERSION = "0.1.0"
-DEFAULT_CHROMOSOME = "V"
 RUN_ID_LENGTH = 20
 
 
@@ -53,8 +52,7 @@ def build_parser():
     parser.add_argument(
         "-c",
         "--chromosome",
-        default=DEFAULT_CHROMOSOME,
-        help=f"Chromosome name for the search interval. Default: {DEFAULT_CHROMOSOME}",
+        help="Chromosome name for the search interval.",
     )
     parser.add_argument(
         "--clipping-side",
@@ -114,7 +112,7 @@ def parse_config(config_path):
     bam_file = section.get("bam_file", "").strip()
     output_dir = section.get("output_dir", "").strip()
     prefix = section.get("prefix", "").strip()
-    chromosome = section.get("chromosome", DEFAULT_CHROMOSOME).strip()
+    chromosome = section.get("chromosome", "").strip()
     range_start = section.get("range_start", "").strip()
     range_end = section.get("range_end", "").strip()
     clipping_side = section.get("clipping_side", "both").strip()
@@ -126,6 +124,8 @@ def parse_config(config_path):
         raise ValueError("Config file must define clipping_extraction.output_dir")
     if not prefix:
         raise ValueError("Config file must define clipping_extraction.prefix")
+    if not chromosome:
+        raise ValueError("Config file must define clipping_extraction.chromosome")
     if not range_start or not range_end:
         raise ValueError(
             "Config file must define clipping_extraction.range_start and range_end"
@@ -159,7 +159,7 @@ def validate_args(args):
                 args.use_config,
             ]
         )
-        if other_args_used or args.chromosome != DEFAULT_CHROMOSOME:
+        if other_args_used or args.chromosome is not None:
             raise ValueError(
                 "--make-config cannot be combined with any other run-setting flag."
             )
@@ -180,7 +180,7 @@ def validate_args(args):
                 args.make_config,
             ]
         )
-        if other_args_used or args.chromosome != DEFAULT_CHROMOSOME:
+        if other_args_used or args.chromosome is not None:
             raise ValueError(
                 "--use-config cannot be combined with any other run-setting flag."
             )
@@ -190,10 +190,16 @@ def validate_args(args):
             )
         return parse_config(args.use_config)
 
-    if not args.bam_file or not args.output_dir or not args.prefix or not args.range:
+    if (
+        not args.bam_file
+        or not args.output_dir
+        or not args.prefix
+        or not args.chromosome
+        or not args.range
+    ):
         raise ValueError(
             "You must provide -f/--bam-file, -o/--output-dir, "
-            "-p/--prefix, and -r/--range unless using --use-config."
+            "-p/--prefix, -c/--chromosome, and -r/--range unless using --use-config."
         )
 
     return {
