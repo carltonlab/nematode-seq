@@ -291,6 +291,30 @@ def get_clip_lengths(read):
     return left_clip, right_clip, left_soft, right_soft
 
 
+def parse_cigar_end_clipping(cigar_string):
+    cigar_ops = re.findall(r"(\d+)([MIDNSHP=X])", cigar_string)
+    if not cigar_ops:
+        return {
+            "sa_left_clip_length": 0,
+            "sa_right_clip_length": 0,
+            "sa_left_clip_is_soft": False,
+            "sa_right_clip_is_soft": False,
+        }
+
+    left_len_str, left_op = cigar_ops[0]
+    right_len_str, right_op = cigar_ops[-1]
+
+    left_clip_length = int(left_len_str) if left_op in {"S", "H"} else 0
+    right_clip_length = int(right_len_str) if right_op in {"S", "H"} else 0
+
+    return {
+        "sa_left_clip_length": left_clip_length,
+        "sa_right_clip_length": right_clip_length,
+        "sa_left_clip_is_soft": left_op == "S",
+        "sa_right_clip_is_soft": right_op == "S",
+    }
+
+
 def wrap_fasta_sequence(sequence, width=80):
     return "\n".join(sequence[i:i + width] for i in range(0, len(sequence), width))
 
@@ -443,10 +467,19 @@ def parse_sa_tag(sa_tag_value):
                 "sa_mapq": mapq,
                 "sa_nm": nm,
                 "sa_raw_entry": raw_entry,
+                **parse_cigar_end_clipping(cigar),
             }
         )
 
     return entries
+
+
+def sa_entry_supports_left_clip(sa_entry):
+    return sa_entry["sa_right_clip_length"] > 0
+
+
+def sa_entry_supports_right_clip(sa_entry):
+    return sa_entry["sa_left_clip_length"] > 0
 
 
 def collect_sa_side_rows(rows, settings):
@@ -458,6 +491,8 @@ def collect_sa_side_rows(rows, settings):
 
         if should_write_left_clip(settings) and row["left_clip_length"] > 0:
             for sa_entry in row["sa_entries"]:
+                if not sa_entry_supports_left_clip(sa_entry):
+                    continue
                 sa_rows.append(
                     {
                         "read_id": row["read_id"],
@@ -473,6 +508,8 @@ def collect_sa_side_rows(rows, settings):
 
         if should_write_right_clip(settings) and row["right_clip_length"] > 0:
             for sa_entry in row["sa_entries"]:
+                if not sa_entry_supports_right_clip(sa_entry):
+                    continue
                 sa_rows.append(
                     {
                         "read_id": row["read_id"],
@@ -506,6 +543,10 @@ def write_sa_tag_tsvs(rows, settings, run_metadata):
         "sa_position",
         "sa_strand",
         "sa_cigar",
+        "sa_left_clip_length",
+        "sa_right_clip_length",
+        "sa_left_clip_is_soft",
+        "sa_right_clip_is_soft",
         "sa_mapq",
         "sa_nm",
         "sa_raw_entry",
