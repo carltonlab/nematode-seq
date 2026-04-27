@@ -62,6 +62,12 @@ def build_parser():
         help="Which clipping side(s) to extract. Default: both",
     )
     parser.add_argument(
+        "--min-clip-length",
+        type=int,
+        default=100,
+        help="Minimum clipping length to count as clipped. Default: 100",
+    )
+    parser.add_argument(
         "--write-whole-fastas",
         action="store_true",
         help="Also write FASTA records for full reads.",
@@ -94,6 +100,7 @@ range_start = 8644000
 range_end = 8644500
 clipping_side = both
 write_whole_fastas = false
+min_clip_length = 100
 """
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(config_text)
@@ -118,6 +125,7 @@ def parse_config(config_path):
     range_end = section.get("range_end", "").strip()
     clipping_side = section.get("clipping_side", "both").strip()
     write_whole_fastas = section.getboolean("write_whole_fastas", fallback=False)
+    min_clip_length = section.getint("min_clip_length", fallback=100)
 
     if not bam_file:
         raise ValueError("Config file must define clipping_extraction.bam_file")
@@ -135,6 +143,8 @@ def parse_config(config_path):
         raise ValueError(
             "Config value clipping_side must be one of: left, right, both"
         )
+    if min_clip_length < 0:
+        raise ValueError("Config value min_clip_length must be >= 0")
 
     return {
         "bam_file": bam_file,
@@ -144,6 +154,7 @@ def parse_config(config_path):
         "range": [int(range_start), int(range_end)],
         "clipping_side": clipping_side,
         "write_whole_fastas": write_whole_fastas,
+        "min_clip_length": min_clip_length,
         "config_source_path": str(Path(config_path).resolve()),
     }
 
@@ -164,7 +175,11 @@ def validate_args(args):
             raise ValueError(
                 "--make-config cannot be combined with any other run-setting flag."
             )
-        if args.clipping_side != "both" or args.write_whole_fastas:
+        if (
+            args.clipping_side != "both"
+            or args.write_whole_fastas
+            or args.min_clip_length != 100
+        ):
             raise ValueError(
                 "--make-config cannot be combined with any other run-setting flag."
             )
@@ -185,7 +200,11 @@ def validate_args(args):
             raise ValueError(
                 "--use-config cannot be combined with any other run-setting flag."
             )
-        if args.clipping_side != "both" or args.write_whole_fastas:
+        if (
+            args.clipping_side != "both"
+            or args.write_whole_fastas
+            or args.min_clip_length != 100
+        ):
             raise ValueError(
                 "--use-config cannot be combined with any other run-setting flag."
             )
@@ -211,8 +230,13 @@ def validate_args(args):
         "range": args.range,
         "clipping_side": args.clipping_side,
         "write_whole_fastas": args.write_whole_fastas,
+        "min_clip_length": args.min_clip_length,
         "config_source_path": None,
     }
+
+
+def clip_passes_threshold(clip_length, settings):
+    return clip_length >= settings["min_clip_length"]
 
 
 def validate_range(start, end):
@@ -375,6 +399,8 @@ def collect_primary_region_rows(settings):
                     "query_sequence": read.query_sequence or "",
                     "left_clip_length": left_clip,
                     "right_clip_length": right_clip,
+                    "left_clip_passes_threshold": clip_passes_threshold(left_clip, settings),
+                    "right_clip_passes_threshold": clip_passes_threshold(right_clip, settings),
                     "left_soft_clip": left_soft,
                     "right_soft_clip": right_soft,
                     "left_clip_sequence": left_sequence,
@@ -402,6 +428,8 @@ def write_primary_region_tsv(rows, run_metadata):
         "query_length",
         "left_clip_length",
         "right_clip_length",
+        "left_clip_passes_threshold",
+        "right_clip_passes_threshold",
         "left_soft_clip",
         "right_soft_clip",
         "has_sa_tag",
@@ -502,7 +530,7 @@ def collect_sa_side_rows(rows, settings):
         if not row["has_sa_tag"]:
             continue
 
-        if should_write_left_clip(settings) and row["left_clip_length"] > 0:
+        if should_write_left_clip(settings) and row["left_clip_passes_threshold"]:
             for sa_entry in row["sa_entries"]:
                 if not sa_entry_supports_left_clip(sa_entry):
                     continue
@@ -519,7 +547,7 @@ def collect_sa_side_rows(rows, settings):
                     }
                 )
 
-        if should_write_right_clip(settings) and row["right_clip_length"] > 0:
+        if should_write_right_clip(settings) and row["right_clip_passes_threshold"]:
             for sa_entry in row["sa_entries"]:
                 if not sa_entry_supports_right_clip(sa_entry):
                     continue
@@ -613,7 +641,7 @@ def write_clipped_fastas(rows, settings, run_metadata):
 
             for row in rows:
                 sequence = row["left_clip_sequence"]
-                if not sequence:
+                if not sequence or not row["left_clip_passes_threshold"]:
                     continue
                 handle.write(build_clip_fasta_header(row, "left") + "\n")
                 handle.write(wrap_fasta_sequence(sequence) + "\n")
@@ -631,7 +659,7 @@ def write_clipped_fastas(rows, settings, run_metadata):
 
             for row in rows:
                 sequence = row["right_clip_sequence"]
-                if not sequence:
+                if not sequence or not row["right_clip_passes_threshold"]:
                     continue
                 handle.write(build_clip_fasta_header(row, "right") + "\n")
                 handle.write(wrap_fasta_sequence(sequence) + "\n")
@@ -648,8 +676,8 @@ def write_clipped_fastas(rows, settings, run_metadata):
 
 
 def get_clipped_sides_label(row):
-    has_left = row["left_clip_length"] > 0
-    has_right = row["right_clip_length"] > 0
+    has_left = row["left_clip_passes_threshold"]
+    has_right = row["right_clip_passes_threshold"]
 
     if has_left and has_right:
         return "both"
@@ -661,8 +689,8 @@ def get_clipped_sides_label(row):
 
 
 def row_matches_read_id_group(row, clipped_side):
-    has_left = row["left_clip_length"] > 0
-    has_right = row["right_clip_length"] > 0
+    has_left = row["left_clip_passes_threshold"]
+    has_right = row["right_clip_passes_threshold"]
 
     if clipped_side == "left":
         return has_left
@@ -879,6 +907,9 @@ def initialize_run_log(settings, run_metadata):
             f"{get_log_timestamp()}\tINFO\twrite_whole_fastas\t"
             f"{str(settings['write_whole_fastas']).lower()}\n"
         )
+        handle.write(
+            f"{get_log_timestamp()}\tINFO\tmin_clip_length\t{settings['min_clip_length']}\n"
+        )
     return output_path
 
 
@@ -942,6 +973,7 @@ range_start = {range_start}
 range_end = {range_end}
 clipping_side = {clipping_side}
 write_whole_fastas = {write_whole_fastas}
+min_clip_length = {min_clip_length}
 """.format(
         bam_file=Path(settings["bam_file"]).resolve(),
         output_dir=Path(settings["output_dir"]).resolve(),
@@ -951,6 +983,7 @@ write_whole_fastas = {write_whole_fastas}
         range_end=end,
         clipping_side=settings["clipping_side"],
         write_whole_fastas=str(settings["write_whole_fastas"]).lower(),
+        min_clip_length=settings["min_clip_length"],
     )
 
 

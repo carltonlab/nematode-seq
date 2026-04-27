@@ -14,6 +14,7 @@ python c124_clipping_extraction.py --make-config my_config.ini
 - range_end
 - clipping_side
 - write_whole_fastas
+- min_clip_length
 
 3. Run from the config file:
 python c124_clipping_extraction.py --use-config my_config.ini
@@ -29,6 +30,9 @@ Choose clipping side:
 --clipping-side right
 --clipping-side both
 
+Minimum clipping length:
+--min-clip-length 100
+
 Optional whole-read FASTA output:
 --write-whole-fastas
 
@@ -37,6 +41,8 @@ Notes on config usage:
 - If `--use-config` is used, the config is copied into the run directory and the original is deleted only after a successful run.
 - If `--use-config` is not used, a config snapshot is generated automatically in the run directory.
 - Chromosome is required for both direct CLI runs and config-based runs.
+- `min_clip_length` controls which clipping events count as true clipping in clipping-based outputs and summaries.
+- The default `min_clip_length` is `100`.
 
 What the script does
 
@@ -45,6 +51,7 @@ This script scans a BAM file for primary alignments overlapping a target genomic
 It can:
 - collect primary reads overlapping the interval
 - report left and right clipping lengths
+- apply a minimum clipping-length threshold to determine which clipping events count in clipped outputs
 - write left and right clipped sequences to FASTA files
 - write whole-read FASTA records if requested
 - parse supplementary alignment (`SA`) tags
