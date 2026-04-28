@@ -21,6 +21,7 @@ RUN_ID_LENGTH = 20
 
 
 def build_parser():
+    """Build the command-line parser for clipping extraction."""
     parser = argparse.ArgumentParser(
         description=(
             "Extract read IDs and clipping-related information for reads "
