@@ -1,0 +1,109 @@
+How to use
+
+Preferred workflow: use a config file
+
+1. Create a config template:
+python c124_clipping_extraction.py --make-config my_prefix
+
+2. Edit the config file and fill in:
+- bam_file
+- output_dir
+- prefix
+- chromosome
+- range_start
+- range_end
+- clipping_side
+- alignment_scope
+- write_whole_fastas
+- min_clip_length
+
+3. Run from the config file:
+python c124_clipping_extraction.py --use-config my_prefix_config.ini
+
+Direct command-line usage:
+python c124_clipping_extraction.py -f INPUT.bam -o OUTPUT_PARENT_DIR -p RUN_PREFIX -c CHROMOSOME -r START END
+
+Example:
+python c124_clipping_extraction.py -f /path/to/reads.bam -o /path/to/results -p tjt1-c-end -c V -r 8644000 8644500
+
+Choose clipping side:
+--clipping-side left
+--clipping-side right
+--clipping-side both
+
+Choose alignment scope:
+--alignment-scope primary
+--alignment-scope primary_and_supplementary
+
+Minimum clipping length:
+--min-clip-length 100
+
+Optional whole-read FASTA output:
+--write-whole-fastas
+
+Notes on config usage:
+- `--make-config` takes only a prefix and writes `<prefix>_config.ini`.
+- `--make-config` rejects prefixes containing periods.
+- `--use-config` takes the actual config filename/path directly.
+- When a config file is used, it is copied into the run directory and its filename is preserved.
+- `--use-config` cannot be combined with other run-setting flags.
+- The original config file is not renamed or deleted by the script.
+- If `--use-config` is not used, a config snapshot is generated automatically in the run directory.
+- Chromosome is required for both direct CLI runs and config-based runs.
+- `min_clip_length` controls which clipping events count as true clipping in clipping-based outputs and summaries.
+- The default `min_clip_length` is `100`.
+- `alignment_scope = primary_and_supplementary` is the default and scans both primary and supplementary alignments overlapping the region.
+- `alignment_scope = primary` restricts the scan to primary alignments only.
+
+What the script does
+
+This script scans a BAM file for primary alignments overlapping a target genomic interval and collects clipping-related evidence from those reads.
+
+It can:
+- collect primary and, by default, supplementary alignments overlapping the interval
+- report left and right clipping lengths
+- apply a minimum clipping-length threshold to determine which clipping events count in clipped outputs
+- write left and right clipped sequences to FASTA files
+- write whole-read FASTA records if requested
+- parse supplementary alignment (`SA`) tags
+- write chromosome-specific SA-tag tables
+- write unique read-ID lists for clipped and unclipped read groups
+- write unclipped-read and run-summary tables
+
+What the script produces
+
+The script creates a new run directory inside the parent output directory. The directory name includes:
+- the run prefix
+- `clipping_extraction`
+- the queried chromosome and range
+
+Example run directory name:
+tjt1-c-end_clipping_extraction_v8644000-8644500
+
+Files written into the run directory can include:
+- run config snapshot: `*_config.ini`
+- primary overlapping read table: `*_primary_region_reads.tsv`
+- left clipped sequences FASTA: `*_left_clipping_sequences.fasta`
+- right clipped sequences FASTA: `*_right_clipping_sequences.fasta`
+- whole-read FASTA: `*_whole_reads.fasta`
+- SA-tag chromosome tables: `*_sa_tags_<chromosome>.tsv`
+- unique read IDs with left clipping: `*_left_clipped_read_ids.txt`
+- unique read IDs with right clipping: `*_right_clipped_read_ids.txt`
+- unique read IDs with both-side clipping: `*_both_clipped_read_ids.txt`
+- unique unclipped read IDs: `*_unclipped_read_ids.txt`
+- unclipped read summary: `*_unclipped_summary.tsv`
+- run summary: `*_summary.tsv`
+
+Important behavior notes
+
+- Only primary alignments are collected in the main read scan.
+- Secondary and supplementary alignments are skipped during the main region scan.
+- Soft-clipped sequence can be written to FASTA because it is present in the BAM read sequence.
+- Hard-clipped sequence length can be reported, but hard-clipped bases are not recoverable from `query_sequence`.
+- SA-tag summary counts include parsed SA entries from reads with SA tags.
+- The run summary reports both total SA-entry counts per chromosome and unique read counts per chromosome.
+
+Script file
+
+The script described in this note is:
+`c124_clipping_extraction.py`

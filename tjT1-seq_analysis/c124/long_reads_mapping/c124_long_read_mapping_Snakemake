@@ -1,0 +1,66 @@
+from pathlib import Path
+
+
+required_keys = ["input_fastqs", "reference", "output_dir", "cores", "preset"]
+missing = [key for key in required_keys if key not in config]
+if missing:
+    raise ValueError(f"Missing required Snakemake config keys: {', '.join(missing)}")
+
+OUTPUT_DIR = Path(config["output_dir"])
+REFERENCE = Path(config["reference"])
+INPUTS_VALUE = config["input_fastqs"]
+
+if isinstance(INPUTS_VALUE, str):
+    INPUT_FASTQS = [Path(path) for path in INPUTS_VALUE.split(",") if path]
+else:
+    INPUT_FASTQS = [Path(path) for path in INPUTS_VALUE]
+
+
+def sample_name(path):
+    name = path.name
+    for suffix in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+SAMPLES = [sample_name(path) for path in INPUT_FASTQS]
+SAMPLE_TO_FASTQ = dict(zip(SAMPLES, INPUT_FASTQS))
+
+if len(SAMPLES) != len(set(SAMPLES)):
+    raise ValueError("Input FASTQ sample names must be unique after suffix stripping")
+
+
+def input_fastq(wildcards):
+    return str(SAMPLE_TO_FASTQ[wildcards.sample])
+
+
+rule all:
+    input:
+        expand(OUTPUT_DIR / "{sample}" / "{sample}.sorted.bam", sample=SAMPLES),
+        expand(OUTPUT_DIR / "{sample}" / "{sample}.sorted.bam.bai", sample=SAMPLES),
+        expand(OUTPUT_DIR / "{sample}" / "{sample}.flagstat.txt", sample=SAMPLES),
+
+
+rule map_long_reads:
+    input:
+        reads=input_fastq,
+        reference=str(REFERENCE)
+    output:
+        bam=OUTPUT_DIR / "{sample}" / "{sample}.sorted.bam",
+        bai=OUTPUT_DIR / "{sample}" / "{sample}.sorted.bam.bai",
+        flagstat=OUTPUT_DIR / "{sample}" / "{sample}.flagstat.txt"
+    params:
+        preset=config["preset"]
+    threads:
+        int(config["cores"])
+    message:
+        "Mapping {wildcards.sample} long reads to reference"
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.bam})"
+        minimap2 -a -x {params.preset} -t {threads} {input.reference} {input.reads} \
+          | samtools sort -@ {threads} -o {output.bam}
+        samtools index -@ {threads} {output.bam}
+        samtools flagstat -@ {threads} {output.bam} > {output.flagstat}
+        """
