@@ -97,6 +97,7 @@ def build_parser():
 
 
 def create_sample_config(config_path):
+    """Write a sample INI config file for this script."""
     config_file = Path(config_path)
     if config_file.exists():
         raise ValueError(f"Refusing to overwrite existing config file: {config_file}")
@@ -118,6 +119,7 @@ min_clip_length = 100
 
 
 def validate_make_config_prefix(prefix_value):
+    """Validate the prefix used to build a sample config filename."""
     if "." in prefix_value:
         raise ValueError(
             "--make-config expects only a prefix, without periods or a filename extension."
